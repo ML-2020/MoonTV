@@ -1097,26 +1097,6 @@ function PlayPageClient() {
         moreVideoAttr: {
           crossOrigin: 'anonymous',
         },
-        customType: {
-          m3u8: function (video: HTMLVideoElement, url: string, art: any) {
-            if (Hls.isSupported()) {
-              const hls = new Hls({
-                maxMaxBufferLength: 30,
-                capLevelToPlayerSize: false,
-                autoStartLoad: true,
-                startLevel: -1,
-              });
-              hls.loadSource(url);
-              hls.attachMedia(video);
-              art.on('destroy', () => hls.destroy());
-              video.hls = hls;
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-              video.src = url;
-            } else {
-              art.notice.show = '不支持播放该视频格式';
-            }
-          },
-        },
         // HLS 支持配置
         customType: {
           m3u8: function (video: HTMLVideoElement, url: string) {
@@ -1129,9 +1109,12 @@ function PlayPageClient() {
               video.hls.destroy();
             }
             const hls = new Hls({
-              debug: false, // 关闭日志
-              enableWorker: true, // WebWorker 解码，降低主线程压力
-              lowLatencyMode: true, // 开启低延迟 LL-HLS
+              debug: false,
+              enableWorker: true,
+              lowLatencyMode: true,
+              capLevelToPlayerSize: false,
+              autoStartLoad: true,
+              startLevel: -1,
 
               /* 缓冲/内存相关 */
               maxBufferLength: 30, // 前向缓冲最大 30s，过大容易导致高延迟
