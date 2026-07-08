@@ -331,7 +331,7 @@ function PlayPageClient() {
           return 0;
       }
     })();
-    score += qualityScore * 0.4;
+    score += qualityScore * 0.6;
 
     // 下载速度评分 (40% 权重) - 基于最大速度线性映射
     const speedScore = (() => {
@@ -350,7 +350,7 @@ function PlayPageClient() {
       const speedRatio = speedKBps / maxSpeed;
       return Math.min(100, Math.max(0, speedRatio * 100));
     })();
-    score += speedScore * 0.4;
+    score += speedScore * 0.25;
 
     // 网络延迟评分 (20% 权重) - 基于延迟范围线性映射
     const pingScore = (() => {
@@ -364,7 +364,7 @@ function PlayPageClient() {
       const pingRatio = (maxPing - ping) / (maxPing - minPing);
       return Math.min(100, Math.max(0, pingRatio * 100));
     })();
-    score += pingScore * 0.2;
+    score += pingScore * 0.15;
 
     return Math.round(score * 100) / 100; // 保留两位小数
   };
@@ -1096,6 +1096,26 @@ function PlayPageClient() {
         lock: true,
         moreVideoAttr: {
           crossOrigin: 'anonymous',
+        },
+        customType: {
+          m3u8: function (video: HTMLVideoElement, url: string, art: any) {
+            if (Hls.isSupported()) {
+              const hls = new Hls({
+                maxMaxBufferLength: 30,
+                capLevelToPlayerSize: false,
+                autoStartLoad: true,
+                startLevel: -1,
+              });
+              hls.loadSource(url);
+              hls.attachMedia(video);
+              art.on('destroy', () => hls.destroy());
+              video.hls = hls;
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+              video.src = url;
+            } else {
+              art.notice.show = '不支持播放该视频格式';
+            }
+          },
         },
         // HLS 支持配置
         customType: {

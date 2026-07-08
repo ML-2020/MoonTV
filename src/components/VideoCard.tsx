@@ -281,7 +281,8 @@ export default function VideoCard({
           src={processImageUrl(actualPoster)}
           alt={actualTitle}
           fill
-          className='object-cover'
+          className='object-contain bg-black/80'
+          sizes='(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw'
           referrerPolicy='no-referrer'
           onLoadingComplete={() => setIsLoading(true)}
         />
