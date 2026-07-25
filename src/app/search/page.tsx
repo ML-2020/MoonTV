@@ -27,6 +27,7 @@ function SearchPageClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [fetchError, setFetchError] = useState(false);
 
   // 获取默认聚合设置：只读取用户本地设置，默认为 true
   const getDefaultAggregate = () => {
@@ -155,9 +156,11 @@ function SearchPageClient() {
           }
         })
       );
+      setFetchError(false);
       setShowResults(true);
     } catch (error) {
       setSearchResults([]);
+      setFetchError(true);
     } finally {
       setIsLoading(false);
     }
@@ -170,6 +173,7 @@ function SearchPageClient() {
 
     // 回显搜索框
     setSearchQuery(trimmed);
+    setFetchError(false);
     setIsLoading(true);
     setShowResults(true);
 
@@ -281,7 +285,24 @@ function SearchPageClient() {
                         />
                       </div>
                     ))}
-                {searchResults.length === 0 && (
+                {searchResults.length === 0 && fetchError && (
+                  <div className='col-span-full text-center py-8'>
+                    <p className='text-red-500 dark:text-red-400 mb-3'>
+                      搜索失败，请检查网络后重试
+                    </p>
+                    <button
+                      onClick={() =>
+                        fetchSearchResults(
+                          searchParams.get('q') || searchQuery.trim()
+                        )
+                      }
+                      className='px-4 py-1.5 bg-green-500 text-white rounded-lg text-sm hover:bg-green-600 transition-colors'
+                    >
+                      重新搜索
+                    </button>
+                  </div>
+                )}
+                {searchResults.length === 0 && !fetchError && (
                   <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
                     未找到相关结果
                   </div>

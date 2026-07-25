@@ -174,3 +174,11 @@ div[data-media-provider] video {
     display: none !important;
   }
 }
+
+/* 触屏设备始终显示卡片操作按钮（无 hover 能力） */
+@media (hover: none) and (pointer: coarse) {
+  .card-actions-touch {
+    opacity: 1 !important;
+    transform: translateY(0) !important;
+  }
+}
