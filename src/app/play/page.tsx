@@ -2,8 +2,13 @@
 
 'use client';
 
-import Artplayer from 'artplayer';
 import Hls from 'hls.js';
+
+// Artplayer 按需加载 (~150KB)，模块级预加载，播放器初始化时直接取缓存
+let ArtplayerModule: any = null;
+import('artplayer').then((m) => {
+  ArtplayerModule = m.default;
+});
 import { Heart } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
@@ -1015,7 +1020,7 @@ function PlayPageClient() {
 
   useEffect(() => {
     if (
-      !Artplayer ||
+      !ArtplayerModule ||
       !Hls ||
       !videoUrl ||
       loading ||
@@ -1075,10 +1080,10 @@ function PlayPageClient() {
 
     try {
       // 创建新的播放器实例
-      Artplayer.PLAYBACK_RATE = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
-      Artplayer.USE_RAF = true;
+      ArtplayerModule.PLAYBACK_RATE = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+      ArtplayerModule.USE_RAF = true;
 
-      artPlayerRef.current = new Artplayer({
+      artPlayerRef.current = new ArtplayerModule({
         container: artRef.current,
         url: videoUrl,
         poster: videoCover,
@@ -1328,7 +1333,7 @@ function PlayPageClient() {
       console.error('创建播放器失败:', err);
       setError('播放器初始化失败');
     }
-  }, [Artplayer, Hls, videoUrl, loading, blockAdEnabled]);
+  }, [ArtplayerModule, Hls, videoUrl, loading, blockAdEnabled]);
 
   // 当组件卸载时清理定时器
   useEffect(() => {

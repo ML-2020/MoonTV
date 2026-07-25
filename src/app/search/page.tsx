@@ -173,9 +173,13 @@ function SearchPageClient() {
     setIsLoading(true);
     setShowResults(true);
 
-    router.push(`/search?q=${encodeURIComponent(trimmed)}`);
-    // 直接发请求
-    fetchSearchResults(trimmed);
+    // 如果查询词未变，URL 不会变化，useEffect 不会触发，需要手动请求
+    const currentQuery = searchParams.get('q');
+    if (currentQuery === trimmed) {
+      fetchSearchResults(trimmed);
+    } else {
+      router.push(`/search?q=${encodeURIComponent(trimmed)}`);
+    }
 
     // 保存到搜索历史 (事件监听会自动更新界面)
     addSearchHistory(trimmed);
