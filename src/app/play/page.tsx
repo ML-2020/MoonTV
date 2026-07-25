@@ -1111,15 +1111,22 @@ function PlayPageClient() {
             const hls = new Hls({
               debug: false,
               enableWorker: true,
-              lowLatencyMode: true,
+              lowLatencyMode: false, // 关闭低延迟模式：VOD 点播不需要低延迟，关闭后 ABR 会优先选择高码率
               capLevelToPlayerSize: false,
               autoStartLoad: true,
-              startLevel: -1,
+              startLevel: -1, // 自动选择初始码率（配合下方 ABR 参数，会从高带宽估算起步）
 
-              /* 缓冲/内存相关 */
-              maxBufferLength: 30, // 前向缓冲最大 30s，过大容易导致高延迟
-              backBufferLength: 30, // 仅保留 30s 已播放内容，避免内存占用
-              maxBufferSize: 60 * 1000 * 1000, // 约 60MB，超出后触发清理
+              /* 缓冲/内存 — 更大的缓冲区让 ABR 有更多数据做准确的带宽估算 */
+              maxBufferLength: 60, // 前向缓冲 60s，给 ABR 更稳定的带宽采样窗口
+              backBufferLength: 90, // 保留 90s 已播放内容
+              maxBufferSize: 120 * 1000 * 1000, // 约 120MB 上限
+              maxMaxBufferLength: 600, // 允许最多缓冲 10 分钟（防止自动被截断）
+
+              /* ABR 带宽估算 — 从高带宽起步，优先切换到高码率 */
+              abrEwmaDefaultEstimate: 5000000, // 初始带宽估算 5Mbps（默认仅 ~500kbps，导致起步码率过低）
+              abrBandWidthFactor: 0.9, // 使用测量带宽的 90%（略保守避免频繁切换，但不影响高码率选择）
+              abrBandWidthUpFactor: 0.7, // 上行切换因子
+              abrMaxWithRealBitrate: true, // 根据实际码率做 ABR 决策，避免 m3u8 声明的码率不准
 
               /* 自定义loader */
               loader: blockAdEnabledRef.current
