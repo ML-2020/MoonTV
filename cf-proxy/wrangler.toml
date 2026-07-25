@@ -1,0 +1,6 @@
+name = "moontv-proxy"
+main = "index.js"
+compatibility_date = "2025-07-01"
+
+# 免费计划每天 10 万次请求，个人使用足够
+# ts 分片 + m3u8 都走这里，一部电影约 500-2000 次请求

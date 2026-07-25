@@ -31,6 +31,20 @@ declare global {
   }
 }
 
+// =============================================================================
+// Cloudflare Worker 视频代理配置
+// 部署 Worker 后，将下方地址替换为你的 Worker URL
+// 留空则直接连接源站（不使用代理）
+// =============================================================================
+const MOONTV_PROXY = 'https://moontv-proxy.maxliu0924.workers.dev';
+
+function wrapProxyUrl(sourceUrl: string): string {
+  if (!MOONTV_PROXY || !sourceUrl) return sourceUrl;
+  // 已经是代理 URL 的不用重复包装
+  if (sourceUrl.startsWith(MOONTV_PROXY)) return sourceUrl;
+  return `${MOONTV_PROXY}/?url=${encodeURIComponent(sourceUrl)}`;
+}
+
 function PlayPageClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -382,7 +396,8 @@ function PlayPageClient() {
       setVideoUrl('');
       return;
     }
-    const newUrl = detailData?.episodes[episodeIndex] || '';
+    const rawUrl = detailData?.episodes[episodeIndex] || '';
+    const newUrl = wrapProxyUrl(rawUrl);
     if (newUrl !== videoUrl) {
       setVideoUrl(newUrl);
     }
@@ -1111,22 +1126,41 @@ function PlayPageClient() {
             const hls = new Hls({
               debug: false,
               enableWorker: true,
-              lowLatencyMode: false, // 关闭低延迟模式：VOD 点播不需要低延迟，关闭后 ABR 会优先选择高码率
+              lowLatencyMode: false, // VOD 不需要低延迟
               capLevelToPlayerSize: false,
               autoStartLoad: true,
-              startLevel: -1, // 自动选择初始码率（配合下方 ABR 参数，会从高带宽估算起步）
+              startLevel: -1, // 自动选择初始码率
+              testBandwidth: true, // 首分片测速后再定最终级别
 
-              /* 缓冲/内存 — 更大的缓冲区让 ABR 有更多数据做准确的带宽估算 */
-              maxBufferLength: 60, // 前向缓冲 60s，给 ABR 更稳定的带宽采样窗口
-              backBufferLength: 90, // 保留 90s 已播放内容
-              maxBufferSize: 120 * 1000 * 1000, // 约 120MB 上限
-              maxMaxBufferLength: 600, // 允许最多缓冲 10 分钟（防止自动被截断）
+              /* 缓冲 — 大缓冲兜底慢速源站 */
+              maxBufferLength: 120, // 前向缓冲 120s，减少卡顿概率
+              backBufferLength: 90,
+              maxBufferSize: 200 * 1000 * 1000, // ~200MB
+              maxMaxBufferLength: 600,
 
-              /* ABR 带宽估算 — 从高带宽起步，优先切换到高码率 */
-              abrEwmaDefaultEstimate: 5000000, // 初始带宽估算 5Mbps（默认仅 ~500kbps，导致起步码率过低）
-              abrBandWidthFactor: 0.9, // 使用测量带宽的 90%（略保守避免频繁切换，但不影响高码率选择）
-              abrBandWidthUpFactor: 0.7, // 上行切换因子
-              abrMaxWithRealBitrate: true, // 根据实际码率做 ABR 决策，避免 m3u8 声明的码率不准
+              /* ABR — 保守起步，快速降级，稳健升档 */
+              abrEwmaDefaultEstimate: 1500000, // 初始 1.5Mbps（免费源起步太高必卡）
+              abrBandWidthFactor: 0.8, // 只用测量带宽的 80%，留 20% 余量抗抖动
+              abrBandWidthUpFactor: 0.5, // 升码率更谨慎（原 0.7 太激进）
+              abrMaxWithRealBitrate: true, // 用实际分片码率而非 m3u8 声明值
+
+              /* EWMA 半衰期：下降快 + 上升慢 = 宁可稳在低码率也不要反复升降 */
+              abrEwmaFastVoD: 2, // 快速 EWMA 2s 半衰（默认 3s）— 检测到带宽下降后快速反应
+              abrEwmaSlowVoD: 12, // 慢速 EWMA 12s 半衰（默认 9s）— 带宽回升需持续确认才升档
+
+              /* 分片加载超时 — 免费源绝不能等 20 秒 */
+              fragLoadingTimeOut: 8000, // 8s 超时（默认 20s，卡住太久）
+              manifestLoadingTimeOut: 8000,
+              levelLoadingTimeOut: 8000,
+
+              /* 卡顿恢复 — 快速降级 */
+              maxLoadingDelay: 3, // 分片加载超过 3s 就换低级别
+              maxStarvationDelay: 3, // 画面卡顿 3s 就紧急降级
+              nudgeMaxRetry: 2, // 最多重试 2 次就降级（默认 3）
+              nudgeOffset: 0.2, // 卡顿后带宽估算下调 20%（默认 10%），更快摆脱卡顿
+
+              /* 预取 */
+              startFragPrefetch: true, // 初始化时预取首分片，减少起播等待
 
               /* 自定义loader */
               loader: blockAdEnabledRef.current
