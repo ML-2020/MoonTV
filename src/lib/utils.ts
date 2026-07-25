@@ -16,12 +16,13 @@ export function getImageProxyUrl(): string | null {
     }
   }
 
+  // 优先使用本地设置的代理地址（非空才生效，空值则 fallthrough）
   const localImageProxy = localStorage.getItem('imageProxyUrl');
-  if (localImageProxy != null) {
-    return localImageProxy.trim() ? localImageProxy.trim() : null;
+  if (localImageProxy != null && localImageProxy.trim()) {
+    return localImageProxy.trim();
   }
 
-  // 如果未设置，则使用全局对象
+  // 如果未设置，则使用全局对象（服务器环境变量注入）
   const serverImageProxy = (window as any).RUNTIME_CONFIG?.IMAGE_PROXY;
   return serverImageProxy && serverImageProxy.trim()
     ? serverImageProxy.trim()

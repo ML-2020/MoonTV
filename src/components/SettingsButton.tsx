@@ -41,8 +41,9 @@ export const SettingsButton: React.FC = () => {
       if (savedEnableImageProxy !== null) {
         setEnableImageProxy(JSON.parse(savedEnableImageProxy));
       } else if (defaultImageProxy) {
-        // 如果有默认图片代理配置，则默认开启
+        // 如果有默认图片代理配置，则默认开启并持久化到 localStorage
         setEnableImageProxy(true);
+        localStorage.setItem('enableImageProxy', JSON.stringify(true));
       }
 
       const savedImageProxyUrl = localStorage.getItem('imageProxyUrl');
@@ -50,6 +51,8 @@ export const SettingsButton: React.FC = () => {
         setImageProxyUrl(savedImageProxyUrl);
       } else if (defaultImageProxy) {
         setImageProxyUrl(defaultImageProxy);
+        // 同步持久化，避免 toggle 后丢失
+        localStorage.setItem('imageProxyUrl', defaultImageProxy);
       }
 
       const savedEnableOptimization =
@@ -93,6 +96,10 @@ export const SettingsButton: React.FC = () => {
     setEnableImageProxy(value);
     if (typeof window !== 'undefined') {
       localStorage.setItem('enableImageProxy', JSON.stringify(value));
+      // 开启时同步保存当前图片代理地址，防止 URL 丢失
+      if (value && imageProxyUrl) {
+        localStorage.setItem('imageProxyUrl', imageProxyUrl);
+      }
     }
   };
 
