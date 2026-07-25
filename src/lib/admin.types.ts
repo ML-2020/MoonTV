@@ -5,6 +5,7 @@ export interface AdminConfig {
     SearchDownstreamMaxPage: number;
     SiteInterfaceCacheTime: number;
     ImageProxy: string;
+    VideoProxy: string;
   };
   UserConfig: {
     AllowRegister: boolean;

@@ -33,16 +33,22 @@ declare global {
 
 // =============================================================================
 // Cloudflare Worker 视频代理配置
-// 部署 Worker 后，将下方地址替换为你的 Worker URL
+// 通过 RUNTIME_CONFIG.VIDEO_PROXY 环境变量控制
 // 留空则直接连接源站（不使用代理）
 // =============================================================================
-const MOONTV_PROXY = 'https://moontv-proxy.maxliu0924.workers.dev';
+
+function getVideoProxyUrl(): string {
+  if (typeof window === 'undefined') return '';
+  return (window as any).RUNTIME_CONFIG?.VIDEO_PROXY || '';
+}
 
 function wrapProxyUrl(sourceUrl: string): string {
-  if (!MOONTV_PROXY || !sourceUrl) return sourceUrl;
+  if (!sourceUrl) return sourceUrl;
+  const proxy = getVideoProxyUrl();
+  if (!proxy) return sourceUrl;
   // 已经是代理 URL 的不用重复包装
-  if (sourceUrl.startsWith(MOONTV_PROXY)) return sourceUrl;
-  return `${MOONTV_PROXY}/?url=${encodeURIComponent(sourceUrl)}`;
+  if (sourceUrl.startsWith(proxy)) return sourceUrl;
+  return `${proxy}/?url=${encodeURIComponent(sourceUrl)}`;
 }
 
 function PlayPageClient() {
