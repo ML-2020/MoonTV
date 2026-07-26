@@ -433,16 +433,48 @@ function PlayPageClient() {
   function filterAdsFromM3U8(m3u8Content: string): string {
     if (!m3u8Content) return '';
 
-    // 按行分割M3U8内容
     const lines = m3u8Content.split('\n');
-    const filteredLines = [];
 
+    // 找出所有 #EXT-X-DISCONTINUITY 行的索引
+    const discontinuityIndices: number[] = [];
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      if (lines[i].trim() === '#EXT-X-DISCONTINUITY') {
+        discontinuityIndices.push(i);
+      }
+    }
 
-      // 只过滤#EXT-X-DISCONTINUITY标识
-      if (!line.includes('#EXT-X-DISCONTINUITY')) {
-        filteredLines.push(line);
+    if (discontinuityIndices.length === 0) {
+      // 没有不连续标记，原样返回
+      return m3u8Content;
+    }
+
+    // 构建需要排除的行索引集合
+    // 策略：成对的 DISCONTINUITY 之间通常是广告段，整体移除；
+    // 落单的 DISCONTINUITY 保留（合法的编码切换等场景）
+    const excludeIndices = new Set<number>();
+    let i = 0;
+
+    while (i < discontinuityIndices.length) {
+      const startIdx = discontinuityIndices[i];
+
+      if (i + 1 < discontinuityIndices.length) {
+        // 有配对的 DISCONTINUITY → 移除这对标记及其之间的广告段
+        const endIdx = discontinuityIndices[i + 1];
+        for (let j = startIdx; j <= endIdx; j++) {
+          excludeIndices.add(j);
+        }
+        i += 2; // 跳过已处理的配对
+      } else {
+        // 落单的 DISCONTINUITY（无配对），保留它（合法的编码切换）
+        i += 1;
+      }
+    }
+
+    // 构建过滤后的输出
+    const filteredLines: string[] = [];
+    for (let k = 0; k < lines.length; k++) {
+      if (!excludeIndices.has(k)) {
+        filteredLines.push(lines[k]);
       }
     }
 
