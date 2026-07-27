@@ -429,9 +429,18 @@ function PlayPageClient() {
     }
   };
 
-  // 去广告相关函数
-  function filterAdsFromM3U8(m3u8Content: string): string {
-    if (!m3u8Content) return '';
+  // 广告时间区间缓存（key 为 playlist URL，不修改 manifest 文本，保持时长/同步正确）
+  const adTimeRangesCache = new Map<
+    string,
+    Array<{ start: number; end: number }>
+  >();
+
+  // 去广告相关函数 — 仅解析广告时间区间，不修改 m3u8 文本
+  // 保持 manifest 完整性以修复时长显示和音画同步问题
+  function parseAdTimeRanges(
+    m3u8Content: string
+  ): Array<{ start: number; end: number }> {
+    if (!m3u8Content) return [];
 
     const lines = m3u8Content.split('\n');
 
@@ -443,42 +452,36 @@ function PlayPageClient() {
       }
     }
 
-    if (discontinuityIndices.length === 0) {
-      // 没有不连续标记，原样返回
-      return m3u8Content;
-    }
+    if (discontinuityIndices.length < 2) return [];
 
-    // 构建需要排除的行索引集合
-    // 策略：成对的 DISCONTINUITY 之间通常是广告段，整体移除；
-    // 落单的 DISCONTINUITY 保留（合法的编码切换等场景）
-    const excludeIndices = new Set<number>();
-    let i = 0;
-
-    while (i < discontinuityIndices.length) {
-      const startIdx = discontinuityIndices[i];
-
-      if (i + 1 < discontinuityIndices.length) {
-        // 有配对的 DISCONTINUITY → 移除这对标记及其之间的广告段
-        const endIdx = discontinuityIndices[i + 1];
-        for (let j = startIdx; j <= endIdx; j++) {
-          excludeIndices.add(j);
+    // 计算每行对应的累计时间（从 manifest 开头算起）
+    let cumulativeTime = 0;
+    const lineTimes: number[] = new Array(lines.length).fill(0);
+    for (let i = 0; i < lines.length; i++) {
+      lineTimes[i] = cumulativeTime;
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith('#EXTINF:')) {
+        const durationMatch = trimmed.match(/#EXTINF:\s*([\d.]+)/);
+        if (durationMatch) {
+          cumulativeTime += parseFloat(durationMatch[1]);
         }
-        i += 2; // 跳过已处理的配对
-      } else {
-        // 落单的 DISCONTINUITY（无配对），保留它（合法的编码切换）
-        i += 1;
       }
     }
 
-    // 构建过滤后的输出
-    const filteredLines: string[] = [];
-    for (let k = 0; k < lines.length; k++) {
-      if (!excludeIndices.has(k)) {
-        filteredLines.push(lines[k]);
-      }
+    // 成对的 DISCONTINUITY 之间为广告区间
+    const ranges: Array<{ start: number; end: number }> = [];
+    let i = 0;
+    while (i + 1 < discontinuityIndices.length) {
+      const startIdx = discontinuityIndices[i];
+      const endIdx = discontinuityIndices[i + 1];
+      ranges.push({
+        start: lineTimes[startIdx],
+        end: lineTimes[endIdx],
+      });
+      i += 2;
     }
 
-    return filteredLines.join('\n');
+    return ranges;
   }
 
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
@@ -486,7 +489,7 @@ function PlayPageClient() {
       super(config);
       const load = this.load.bind(this);
       this.load = function (context: any, config: any, callbacks: any) {
-        // 拦截manifest和level请求
+        // 拦截 manifest 和 level 请求 — 仅解析广告时间区间，不修改文本
         if (
           (context as any).type === 'manifest' ||
           (context as any).type === 'level'
@@ -497,18 +500,38 @@ function PlayPageClient() {
             stats: any,
             context: any
           ) {
-            // 如果是m3u8文件，处理内容以移除广告分段
             if (response.data && typeof response.data === 'string') {
-              // 过滤掉广告段 - 实现更精确的广告过滤逻辑
-              response.data = filterAdsFromM3U8(response.data);
+              const playlistUrl = (context as any).url || '';
+              // 每个 playlist 只解析一次，缓存结果
+              if (!adTimeRangesCache.has(playlistUrl)) {
+                const ranges = parseAdTimeRanges(response.data);
+                adTimeRangesCache.set(playlistUrl, ranges);
+                if (ranges.length > 0) {
+                  console.log(
+                    `检测到 ${ranges.length} 个广告区间:`,
+                    ranges.map(
+                      (r) =>
+                        `${formatTime(r.start)} → ${formatTime(r.end)}`
+                    )
+                  );
+                }
+              }
+              // manifest 文本原样传递，不修改
             }
             return onSuccess(response, stats, context, null);
           };
         }
-        // 执行原始load方法
+        // 执行原始 load 方法
         load(context, config, callbacks);
       };
     }
+  }
+
+  // 格式化秒数为 mm:ss
+  function formatTime(seconds: number): string {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
   // 当集数索引变化时自动更新视频地址
@@ -1170,11 +1193,11 @@ function PlayPageClient() {
               startLevel: -1, // 自动选择初始码率
               testBandwidth: true, // 首分片测速后再定最终级别
 
-              /* 缓冲 — 大缓冲兜底慢速源站 */
-              maxBufferLength: 120, // 前向缓冲 120s，减少卡顿概率
-              backBufferLength: 90,
-              maxBufferSize: 200 * 1000 * 1000, // ~200MB
-              maxMaxBufferLength: 600,
+              /* 缓冲 — 平衡 seek 速度与抗卡顿 */
+              maxBufferLength: 45, // 前向缓冲 45s（原 120s），减少 seek 时清空缓冲区耗时
+              backBufferLength: 30,
+              maxBufferSize: 80 * 1000 * 1000, // ~80MB
+              maxMaxBufferLength: 180,
 
               /* ABR — 保守起步，快速降级，稳健升档 */
               abrEwmaDefaultEstimate: 1500000, // 初始 1.5Mbps（免费源起步太高必卡）
@@ -1182,9 +1205,9 @@ function PlayPageClient() {
               abrBandWidthUpFactor: 0.5, // 升码率更谨慎（原 0.7 太激进）
               abrMaxWithRealBitrate: true, // 用实际分片码率而非 m3u8 声明值
 
-              /* EWMA 半衰期：下降快 + 上升慢 = 宁可稳在低码率也不要反复升降 */
+              /* EWMA 半衰期：下降快 + 上升适中 = 宁可稳在低码率也不要反复升降 */
               abrEwmaFastVoD: 2, // 快速 EWMA 2s 半衰（默认 3s）— 检测到带宽下降后快速反应
-              abrEwmaSlowVoD: 12, // 慢速 EWMA 12s 半衰（默认 9s）— 带宽回升需持续确认才升档
+              abrEwmaSlowVoD: 6, // 慢速 EWMA 6s 半衰（原 12s）— seek 后带宽恢复快一倍
 
               /* 分片加载超时 — 免费源绝不能等 20 秒 */
               fragLoadingTimeOut: 8000, // 8s 超时（默认 20s，卡住太久）
@@ -1199,6 +1222,9 @@ function PlayPageClient() {
 
               /* 预取 */
               startFragPrefetch: true, // 初始化时预取首分片，减少起播等待
+
+              /* seek 后更快恢复 */
+              highBufferWatchdogPeriod: 1, // 每秒检查缓冲健康（默认 2s），seek 后更快触发恢复
 
               /* 自定义loader */
               loader: blockAdEnabledRef.current
@@ -1338,6 +1364,27 @@ function PlayPageClient() {
       });
 
       artPlayerRef.current.on('video:timeupdate', () => {
+        // 广告跳过：检测当前播放位置是否进入已知广告区间
+        if (blockAdEnabledRef.current && adTimeRangesCache.size > 0) {
+          const currentTime = artPlayerRef.current.currentTime || 0;
+          for (const ranges of adTimeRangesCache.values()) {
+            for (const range of ranges) {
+              // 进入广告区间（留 0.5s 余量避免边界误触发），自动跳过
+              if (
+                currentTime >= range.start &&
+                currentTime < range.end - 0.5
+              ) {
+                console.log(
+                  `跳过广告: ${formatTime(range.start)} → ${formatTime(range.end)}`
+                );
+                artPlayerRef.current.currentTime = range.end;
+                artPlayerRef.current.notice.show = '已跳过广告';
+                return; // 跳出 timeupdate，避免在广告区间内保存进度
+              }
+            }
+          }
+        }
+
         const now = Date.now();
         let interval = 5000;
         if (process.env.NEXT_PUBLIC_STORAGE_TYPE === 'd1') {
