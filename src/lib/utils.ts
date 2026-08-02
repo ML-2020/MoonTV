@@ -16,13 +16,12 @@ export function getImageProxyUrl(): string | null {
     }
   }
 
-  // 优先使用本地设置的代理地址（非空才生效，空值则 fallthrough）
   const localImageProxy = localStorage.getItem('imageProxyUrl');
-  if (localImageProxy != null && localImageProxy.trim()) {
-    return localImageProxy.trim();
+  if (localImageProxy != null) {
+    return localImageProxy.trim() ? localImageProxy.trim() : null;
   }
 
-  // 如果未设置，则使用全局对象（服务器环境变量注入）
+  // 如果未设置，则使用全局对象
   const serverImageProxy = (window as any).RUNTIME_CONFIG?.IMAGE_PROXY;
   return serverImageProxy && serverImageProxy.trim()
     ? serverImageProxy.trim()
@@ -82,17 +81,8 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
           pingTime = performance.now() - pingStart; // 记录到失败为止的时间
         });
 
-      // 使用优化配置的 hls.js，避免默认 20s 超时
-      const hls = new Hls({
-        enableWorker: false,
-        fragLoadingTimeOut: 6000,
-        manifestLoadingTimeOut: 6000,
-        levelLoadingTimeOut: 6000,
-        startLevel: -1,
-        abrEwmaDefaultEstimate: 1000000, // 1Mbps 起步测速，中等码率分片更代表实际速度
-        maxBufferLength: 10, // 探测不需要大缓冲
-        maxMaxBufferLength: 10,
-      });
+      // 固定使用hls.js加载
+      const hls = new Hls();
 
       // 设置超时处理
       const timeout = setTimeout(() => {

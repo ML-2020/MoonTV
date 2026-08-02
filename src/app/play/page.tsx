@@ -31,26 +31,6 @@ declare global {
   }
 }
 
-// =============================================================================
-// Cloudflare Worker 视频代理配置
-// 通过 RUNTIME_CONFIG.VIDEO_PROXY 环境变量控制
-// 留空则直接连接源站（不使用代理）
-// =============================================================================
-
-function getVideoProxyUrl(): string {
-  if (typeof window === 'undefined') return '';
-  return (window as any).RUNTIME_CONFIG?.VIDEO_PROXY || '';
-}
-
-function wrapProxyUrl(sourceUrl: string): string {
-  if (!sourceUrl) return sourceUrl;
-  const proxy = getVideoProxyUrl();
-  if (!proxy) return sourceUrl;
-  // 已经是代理 URL 的不用重复包装
-  if (sourceUrl.startsWith(proxy)) return sourceUrl;
-  return `${proxy}/?url=${encodeURIComponent(sourceUrl)}`;
-}
-
 function PlayPageClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -351,7 +331,7 @@ function PlayPageClient() {
           return 0;
       }
     })();
-    score += qualityScore * 0.6;
+    score += qualityScore * 0.4;
 
     // 下载速度评分 (40% 权重) - 基于最大速度线性映射
     const speedScore = (() => {
@@ -370,7 +350,7 @@ function PlayPageClient() {
       const speedRatio = speedKBps / maxSpeed;
       return Math.min(100, Math.max(0, speedRatio * 100));
     })();
-    score += speedScore * 0.25;
+    score += speedScore * 0.4;
 
     // 网络延迟评分 (20% 权重) - 基于延迟范围线性映射
     const pingScore = (() => {
@@ -384,7 +364,7 @@ function PlayPageClient() {
       const pingRatio = (maxPing - ping) / (maxPing - minPing);
       return Math.min(100, Math.max(0, pingRatio * 100));
     })();
-    score += pingScore * 0.15;
+    score += pingScore * 0.2;
 
     return Math.round(score * 100) / 100; // 保留两位小数
   };
@@ -402,8 +382,7 @@ function PlayPageClient() {
       setVideoUrl('');
       return;
     }
-    const rawUrl = detailData?.episodes[episodeIndex] || '';
-    const newUrl = wrapProxyUrl(rawUrl);
+    const newUrl = detailData?.episodes[episodeIndex] || '';
     if (newUrl !== videoUrl) {
       setVideoUrl(newUrl);
     }
@@ -429,175 +408,24 @@ function PlayPageClient() {
     }
   };
 
-  // 去广告：从 m3u8 文本中移除广告分片，彻底解决时长显示和进度条偏差问题
-  // 策略：结合 DISCONTINUITY 标记 + 分片时长异常检测，避免误删正片
-  function removeAdSegments(m3u8Content: string): {
-    text: string;
-    removedCount: number;
-  } {
-    if (!m3u8Content) return { text: m3u8Content, removedCount: 0 };
+  // 去广告相关函数
+  function filterAdsFromM3U8(m3u8Content: string): string {
+    if (!m3u8Content) return '';
 
+    // 按行分割M3U8内容
     const lines = m3u8Content.split('\n');
-
-    // ---------------------------------------------------------------------------
-    // 第一步：解析所有分片的 EXTINF 时长，找出"正片标准时长"
-    // 正片分片通常时长统一（如都是 ~10s），广告分片时长往往不同
-    // ---------------------------------------------------------------------------
-    interface SegmentInfo {
-      extinfLineIdx: number; // #EXTINF 行索引
-      tsLineIdx: number; // .ts 分片行索引（通常是 extinfLineIdx + 1）
-      duration: number;
-    }
-    const allSegments: SegmentInfo[] = [];
+    const filteredLines = [];
 
     for (let i = 0; i < lines.length; i++) {
-      const match = lines[i].trim().match(/^#EXTINF:([\d.]+)/);
-      if (match) {
-        const duration = parseFloat(match[1]);
-        // 找到紧跟着的 .ts 行
-        let tsIdx = i + 1;
-        while (tsIdx < lines.length && lines[tsIdx].trim() === '') {
-          tsIdx++;
-        }
-        if (tsIdx < lines.length && lines[tsIdx].trim() && !lines[tsIdx].trim().startsWith('#')) {
-          allSegments.push({ extinfLineIdx: i, tsLineIdx: tsIdx, duration });
-        }
+      const line = lines[i];
+
+      // 只过滤#EXT-X-DISCONTINUITY标识
+      if (!line.includes('#EXT-X-DISCONTINUITY')) {
+        filteredLines.push(line);
       }
     }
 
-    if (allSegments.length === 0) {
-      return { text: m3u8Content, removedCount: 0 };
-    }
-
-    // 找出最常见的分片时长（四舍五入到 0.5s），作为"正片标准时长"
-    const durationFreq = new Map<number, number>();
-    allSegments.forEach((s) => {
-      const rounded = Math.round(s.duration * 2) / 2;
-      durationFreq.set(rounded, (durationFreq.get(rounded) || 0) + 1);
-    });
-    let dominantDuration = 0;
-    let maxCount = 0;
-    durationFreq.forEach((count, dur) => {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantDuration = dur;
-      }
-    });
-
-    // 容差：与标准时长相差超过 25%（至少 1.5s）视为异常分片
-    const tolerance = Math.max(dominantDuration * 0.25, 1.5);
-
-    // ---------------------------------------------------------------------------
-    // 第二步：找出所有 DISCONTINUITY 标记
-    // ---------------------------------------------------------------------------
-    const discontinuityIndices: number[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === '#EXT-X-DISCONTINUITY') {
-        discontinuityIndices.push(i);
-      }
-    }
-
-    if (discontinuityIndices.length === 0) {
-      return { text: m3u8Content, removedCount: 0 };
-    }
-
-    if (discontinuityIndices.length === 1) {
-      // 只有一个 DISCONTINUITY，无法配对判断，仅移除该标签
-      lines.splice(discontinuityIndices[0], 1);
-      return { text: lines.join('\n'), removedCount: 0 };
-    }
-
-    // ---------------------------------------------------------------------------
-    // 第三步：对每对 DISCONTINUITY，检查中间的分片是否"异常"
-    // 只有大部分中间分片时长偏离正片标准时，才判定为广告并移除
-    // ---------------------------------------------------------------------------
-    const linesToRemove = new Set<number>();
-    let adPairCount = 0;
-
-    for (let i = 0; i + 1 < discontinuityIndices.length; i += 2) {
-      const startIdx = discontinuityIndices[i];
-      const endIdx = discontinuityIndices[i + 1];
-
-      // 收集这对 DISCONTINUITY 之间的分片
-      const insideSegments = allSegments.filter(
-        (s) => s.extinfLineIdx > startIdx && s.extinfLineIdx < endIdx
-      );
-
-      if (insideSegments.length === 0) {
-        // 没有分片，仅移除两个 DISCONTINUITY 标签本身
-        linesToRemove.add(startIdx);
-        linesToRemove.add(endIdx);
-        continue;
-      }
-
-      // 统计时长异常的分片比例
-      const anomalousCount = insideSegments.filter(
-        (s) => Math.abs(s.duration - dominantDuration) > tolerance
-      ).length;
-      const anomalyRatio = anomalousCount / insideSegments.length;
-
-      // 如果超过一半的分片时长都偏离标准（或根本没有标准时长可参考），判定为广告
-      if (anomalyRatio >= 0.5 || dominantDuration === 0) {
-        for (let j = startIdx; j <= endIdx; j++) {
-          linesToRemove.add(j);
-        }
-        adPairCount++;
-        console.log(
-          `[去广告] 移除广告区间: 行 ${startIdx}-${endIdx}, ` +
-            `${insideSegments.length} 个分片, 异常比例 ${(anomalyRatio * 100).toFixed(0)}%`
-        );
-      } else {
-        // 大部分分片时长正常 → 不是广告，仅移除 DISCONTINUITY 标签
-        linesToRemove.add(startIdx);
-        linesToRemove.add(endIdx);
-        console.log(
-          `[去广告] 跳过非广告区间: 行 ${startIdx}-${endIdx}, ` +
-            `${insideSegments.length} 个分片, 异常比例 ${(anomalyRatio * 100).toFixed(0)}%`
-        );
-      }
-    }
-
-    // 处理落单的 DISCONTINUITY
-    if (discontinuityIndices.length % 2 !== 0) {
-      const lastIdx = discontinuityIndices[discontinuityIndices.length - 1];
-      linesToRemove.add(lastIdx);
-    }
-
-    // ---------------------------------------------------------------------------
-    // 安全检查：如果超过 30% 的分片被移除，说明检测可能出错，降级处理
-    // ---------------------------------------------------------------------------
-    let segmentsRemoved = 0;
-    allSegments.forEach((s) => {
-      if (linesToRemove.has(s.extinfLineIdx)) segmentsRemoved++;
-    });
-
-    if (segmentsRemoved > allSegments.length * 0.3) {
-      console.warn(
-        `[去广告] 检测到 ${segmentsRemoved}/${allSegments.length} 分片将被移除(>${
-          (segmentsRemoved / allSegments.length * 100).toFixed(0)
-        }%), 降级为仅移除 DISCONTINUITY 标签`
-      );
-      // 降级：仅移除所有 DISCONTINUITY 标签，保留所有分片
-      const cleaned = lines.filter((l) => l.trim() !== '#EXT-X-DISCONTINUITY');
-      return { text: cleaned.join('\n'), removedCount: 0 };
-    }
-
-    if (linesToRemove.size === 0) {
-      return { text: m3u8Content, removedCount: 0 };
-    }
-
-    // 构建清理后的文本
-    const cleanedLines = lines.filter((_, idx) => !linesToRemove.has(idx));
-    const cleanedText = cleanedLines.join('\n');
-
-    if (adPairCount > 0) {
-      console.log(
-        `[去广告] 共移除 ${adPairCount} 组广告, ${segmentsRemoved} 个分片, ` +
-          `剩余 ${allSegments.length - segmentsRemoved} 个分片`
-      );
-    }
-
-    return { text: cleanedText, removedCount: adPairCount };
+    return filteredLines.join('\n');
   }
 
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
@@ -605,7 +433,7 @@ function PlayPageClient() {
       super(config);
       const load = this.load.bind(this);
       this.load = function (context: any, config: any, callbacks: any) {
-        // 拦截 manifest 和 level 请求，移除广告分片
+        // 拦截manifest和level请求
         if (
           (context as any).type === 'manifest' ||
           (context as any).type === 'level'
@@ -616,22 +444,15 @@ function PlayPageClient() {
             stats: any,
             context: any
           ) {
-            if (
-              response.data &&
-              typeof response.data === 'string'
-            ) {
-              const { text, removedCount } = removeAdSegments(response.data);
-              if (removedCount > 0) {
-                console.log(
-                  `[去广告] 已从播放列表中移除 ${removedCount} 组广告分片`
-                );
-              }
-              response.data = text;
+            // 如果是m3u8文件，处理内容以移除广告分段
+            if (response.data && typeof response.data === 'string') {
+              // 过滤掉广告段 - 实现更精确的广告过滤逻辑
+              response.data = filterAdsFromM3U8(response.data);
             }
             return onSuccess(response, stats, context, null);
           };
         }
-        // 执行原始 load 方法
+        // 执行原始load方法
         load(context, config, callbacks);
       };
     }
@@ -1288,46 +1109,14 @@ function PlayPageClient() {
               video.hls.destroy();
             }
             const hls = new Hls({
-              debug: false,
-              enableWorker: true,
-              lowLatencyMode: false, // VOD 不需要低延迟
-              capLevelToPlayerSize: false,
-              autoStartLoad: true,
-              startLevel: -1, // 自动选择初始码率
-              testBandwidth: true, // 首分片测速后再定最终级别
+              debug: false, // 关闭日志
+              enableWorker: true, // WebWorker 解码，降低主线程压力
+              lowLatencyMode: true, // 开启低延迟 LL-HLS
 
-              /* 缓冲 — 平衡 seek 速度与抗卡顿 */
-              maxBufferLength: 45, // 前向缓冲 45s（原 120s），减少 seek 时清空缓冲区耗时
-              backBufferLength: 30,
-              maxBufferSize: 80 * 1000 * 1000, // ~80MB
-              maxMaxBufferLength: 180,
-
-              /* ABR — 保守起步，快速降级，稳健升档 */
-              abrEwmaDefaultEstimate: 1500000, // 初始 1.5Mbps（免费源起步太高必卡）
-              abrBandWidthFactor: 0.8, // 只用测量带宽的 80%，留 20% 余量抗抖动
-              abrBandWidthUpFactor: 0.5, // 升码率更谨慎（原 0.7 太激进）
-              abrMaxWithRealBitrate: true, // 用实际分片码率而非 m3u8 声明值
-
-              /* EWMA 半衰期：避免反复升降码率导致卡帧 */
-              abrEwmaFastVoD: 3, // 快速 EWMA 3s 半衰（默认值），避免短暂波动误触发降级
-              abrEwmaSlowVoD: 8, // 慢速 EWMA 8s 半衰，升档稍保守以保持稳定
-
-              /* 分片加载超时 — 免费源绝不能等 20 秒 */
-              fragLoadingTimeOut: 8000, // 8s 超时（默认 20s，卡住太久）
-              manifestLoadingTimeOut: 8000,
-              levelLoadingTimeOut: 8000,
-
-              /* 卡顿恢复 */
-              maxLoadingDelay: 3, // 分片加载超过 3s 就换低级别
-              maxStarvationDelay: 4, // 画面卡顿 4s 再紧急降级（原 3s），减少误触发
-              nudgeMaxRetry: 3, // 最多重试 3 次再降级（默认值）
-              nudgeOffset: 0.15, // 卡顿后带宽估算下调 15%（原 20%），避免降级过度
-
-              /* 预取 */
-              startFragPrefetch: true, // 初始化时预取首分片，减少起播等待
-
-              /* seek 后更快恢复 */
-              highBufferWatchdogPeriod: 1, // 每秒检查缓冲健康（默认 2s），seek 后更快触发恢复
+              /* 缓冲/内存相关 */
+              maxBufferLength: 30, // 前向缓冲最大 30s，过大容易导致高延迟
+              backBufferLength: 30, // 仅保留 30s 已播放内容，避免内存占用
+              maxBufferSize: 60 * 1000 * 1000, // 约 60MB，超出后触发清理
 
               /* 自定义loader */
               loader: blockAdEnabledRef.current
