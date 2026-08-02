@@ -430,7 +430,7 @@ function PlayPageClient() {
   };
 
   // 去广告：从 m3u8 文本中移除广告分片，彻底解决时长显示和进度条偏差问题
-  // 广告由成对的 #EXT-X-DISCONTINUITY 包裹，中间的分片即为广告
+  // 策略：结合 DISCONTINUITY 标记 + 分片时长异常检测，避免误删正片
   function removeAdSegments(m3u8Content: string): {
     text: string;
     removedCount: number;
@@ -439,7 +439,57 @@ function PlayPageClient() {
 
     const lines = m3u8Content.split('\n');
 
-    // 找出所有 #EXT-X-DISCONTINUITY 行的索引
+    // ---------------------------------------------------------------------------
+    // 第一步：解析所有分片的 EXTINF 时长，找出"正片标准时长"
+    // 正片分片通常时长统一（如都是 ~10s），广告分片时长往往不同
+    // ---------------------------------------------------------------------------
+    interface SegmentInfo {
+      extinfLineIdx: number; // #EXTINF 行索引
+      tsLineIdx: number; // .ts 分片行索引（通常是 extinfLineIdx + 1）
+      duration: number;
+    }
+    const allSegments: SegmentInfo[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].trim().match(/^#EXTINF:([\d.]+)/);
+      if (match) {
+        const duration = parseFloat(match[1]);
+        // 找到紧跟着的 .ts 行
+        let tsIdx = i + 1;
+        while (tsIdx < lines.length && lines[tsIdx].trim() === '') {
+          tsIdx++;
+        }
+        if (tsIdx < lines.length && lines[tsIdx].trim() && !lines[tsIdx].trim().startsWith('#')) {
+          allSegments.push({ extinfLineIdx: i, tsLineIdx: tsIdx, duration });
+        }
+      }
+    }
+
+    if (allSegments.length === 0) {
+      return { text: m3u8Content, removedCount: 0 };
+    }
+
+    // 找出最常见的分片时长（四舍五入到 0.5s），作为"正片标准时长"
+    const durationFreq = new Map<number, number>();
+    allSegments.forEach((s) => {
+      const rounded = Math.round(s.duration * 2) / 2;
+      durationFreq.set(rounded, (durationFreq.get(rounded) || 0) + 1);
+    });
+    let dominantDuration = 0;
+    let maxCount = 0;
+    durationFreq.forEach((count, dur) => {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantDuration = dur;
+      }
+    });
+
+    // 容差：与标准时长相差超过 25%（至少 1.5s）视为异常分片
+    const tolerance = Math.max(dominantDuration * 0.25, 1.5);
+
+    // ---------------------------------------------------------------------------
+    // 第二步：找出所有 DISCONTINUITY 标记
+    // ---------------------------------------------------------------------------
     const discontinuityIndices: number[] = [];
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].trim() === '#EXT-X-DISCONTINUITY') {
@@ -447,17 +497,20 @@ function PlayPageClient() {
       }
     }
 
-    if (discontinuityIndices.length < 2) {
-      // 单数个 DISCONTINUITY 没有配对，直接移除该标签避免干扰
-      if (discontinuityIndices.length === 1) {
-        lines.splice(discontinuityIndices[0], 1);
-        return { text: lines.join('\n'), removedCount: 0 };
-      }
+    if (discontinuityIndices.length === 0) {
       return { text: m3u8Content, removedCount: 0 };
     }
 
-    // 成对处理：每两个 DISCONTINUITY 之间的分片视为广告
-    // [0,1] 为一对广告区间，[2,3] 为下一对，以此类推
+    if (discontinuityIndices.length === 1) {
+      // 只有一个 DISCONTINUITY，无法配对判断，仅移除该标签
+      lines.splice(discontinuityIndices[0], 1);
+      return { text: lines.join('\n'), removedCount: 0 };
+    }
+
+    // ---------------------------------------------------------------------------
+    // 第三步：对每对 DISCONTINUITY，检查中间的分片是否"异常"
+    // 只有大部分中间分片时长偏离正片标准时，才判定为广告并移除
+    // ---------------------------------------------------------------------------
     const linesToRemove = new Set<number>();
     let adPairCount = 0;
 
@@ -465,17 +518,68 @@ function PlayPageClient() {
       const startIdx = discontinuityIndices[i];
       const endIdx = discontinuityIndices[i + 1];
 
-      // 标记从第一个 DISCONTINUITY 到第二个 DISCONTINUITY（含）的所有行
-      for (let j = startIdx; j <= endIdx; j++) {
-        linesToRemove.add(j);
+      // 收集这对 DISCONTINUITY 之间的分片
+      const insideSegments = allSegments.filter(
+        (s) => s.extinfLineIdx > startIdx && s.extinfLineIdx < endIdx
+      );
+
+      if (insideSegments.length === 0) {
+        // 没有分片，仅移除两个 DISCONTINUITY 标签本身
+        linesToRemove.add(startIdx);
+        linesToRemove.add(endIdx);
+        continue;
       }
-      adPairCount++;
+
+      // 统计时长异常的分片比例
+      const anomalousCount = insideSegments.filter(
+        (s) => Math.abs(s.duration - dominantDuration) > tolerance
+      ).length;
+      const anomalyRatio = anomalousCount / insideSegments.length;
+
+      // 如果超过一半的分片时长都偏离标准（或根本没有标准时长可参考），判定为广告
+      if (anomalyRatio >= 0.5 || dominantDuration === 0) {
+        for (let j = startIdx; j <= endIdx; j++) {
+          linesToRemove.add(j);
+        }
+        adPairCount++;
+        console.log(
+          `[去广告] 移除广告区间: 行 ${startIdx}-${endIdx}, ` +
+            `${insideSegments.length} 个分片, 异常比例 ${(anomalyRatio * 100).toFixed(0)}%`
+        );
+      } else {
+        // 大部分分片时长正常 → 不是广告，仅移除 DISCONTINUITY 标签
+        linesToRemove.add(startIdx);
+        linesToRemove.add(endIdx);
+        console.log(
+          `[去广告] 跳过非广告区间: 行 ${startIdx}-${endIdx}, ` +
+            `${insideSegments.length} 个分片, 异常比例 ${(anomalyRatio * 100).toFixed(0)}%`
+        );
+      }
     }
 
-    // 处理落单的 DISCONTINUITY（如果有奇数个）
+    // 处理落单的 DISCONTINUITY
     if (discontinuityIndices.length % 2 !== 0) {
       const lastIdx = discontinuityIndices[discontinuityIndices.length - 1];
-      linesToRemove.add(lastIdx); // 移除未配对的 DISCONTINUITY 标签
+      linesToRemove.add(lastIdx);
+    }
+
+    // ---------------------------------------------------------------------------
+    // 安全检查：如果超过 30% 的分片被移除，说明检测可能出错，降级处理
+    // ---------------------------------------------------------------------------
+    let segmentsRemoved = 0;
+    allSegments.forEach((s) => {
+      if (linesToRemove.has(s.extinfLineIdx)) segmentsRemoved++;
+    });
+
+    if (segmentsRemoved > allSegments.length * 0.3) {
+      console.warn(
+        `[去广告] 检测到 ${segmentsRemoved}/${allSegments.length} 分片将被移除(>${
+          (segmentsRemoved / allSegments.length * 100).toFixed(0)
+        }%), 降级为仅移除 DISCONTINUITY 标签`
+      );
+      // 降级：仅移除所有 DISCONTINUITY 标签，保留所有分片
+      const cleaned = lines.filter((l) => l.trim() !== '#EXT-X-DISCONTINUITY');
+      return { text: cleaned.join('\n'), removedCount: 0 };
     }
 
     if (linesToRemove.size === 0) {
@@ -485,6 +589,13 @@ function PlayPageClient() {
     // 构建清理后的文本
     const cleanedLines = lines.filter((_, idx) => !linesToRemove.has(idx));
     const cleanedText = cleanedLines.join('\n');
+
+    if (adPairCount > 0) {
+      console.log(
+        `[去广告] 共移除 ${adPairCount} 组广告, ${segmentsRemoved} 个分片, ` +
+          `剩余 ${allSegments.length - segmentsRemoved} 个分片`
+      );
+    }
 
     return { text: cleanedText, removedCount: adPairCount };
   }
