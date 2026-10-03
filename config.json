@@ -99,6 +99,26 @@
       "api": "https://360zyzz.com/api.php/provide/vod/",
       "name": "360m3u8",
       "detail": "https://360zyzz.com"
+    },
+    "guangsu": {
+      "api": "https://api.guangsuapi.com/api.php/provide/vod/from/gsm3u8",
+      "name": "光速资源",
+      "detail": "https://api.guangsuapi.com"
+    },
+    "shandian": {
+      "api": "http://sdzyapi.com/api.php/provide/vod/from/sdm3u8",
+      "name": "闪电资源",
+      "detail": "http://sdzyapi.com"
+    },
+    "yaya": {
+      "api": "https://cj.yayazy.net/api.php/provide/vod/",
+      "name": "丫丫资源",
+      "detail": "https://cj.yayazy.net"
+    },
+    "niuniu": {
+      "api": "https://api.niuniuzy.me/api.php/provide/vod/",
+      "name": "牛牛资源",
+      "detail": "https://api.niuniuzy.me"
     }
   }
 }
