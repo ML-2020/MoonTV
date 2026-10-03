@@ -423,7 +423,7 @@ function PlayPageClient() {
       try {
         const h = new URL(t, window.location.href).host;
         domainCount[h] = (domainCount[h] || 0) + 1;
-      } catch (e) {}
+      } catch (e) { /* 忽略解析失败的URL */ }
     }
     let mainDomain: string | null = null;
     let maxCount = 0;
@@ -444,7 +444,7 @@ function PlayPageClient() {
           if (mainDomain && new URL(t, window.location.href).host !== mainDomain) {
             isAd = true;
           }
-        } catch (e) {}
+        } catch (e) { /* 忽略解析失败的URL */ }
         if (isAd) {
           // 删除该切片及其前面的 #EXTINF 行
           while (filteredLines.length > 0) {
