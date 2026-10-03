@@ -427,11 +427,18 @@ function PlayPageClient() {
     }
     let mainDomain: string | null = null;
     let maxCount = 0;
+    let totalSegments = 0;
     for (const [h, c] of Object.entries(domainCount)) {
+      totalSegments += c;
       if (c > maxCount) {
         maxCount = c;
         mainDomain = h;
       }
+    }
+
+    // 安全保护：主域名占比不足 85% 时（可能是多CDN正片），跳过过滤避免误删
+    if (totalSegments === 0 || maxCount / totalSegments < 0.85) {
+      return m3u8Content;
     }
 
     // 第二遍：过滤异域广告切片（连同其 #EXTINF 行）
