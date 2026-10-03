@@ -408,21 +408,57 @@ function PlayPageClient() {
     }
   };
 
-  // 去广告相关函数
+  // 去广告相关函数：按域名过滤异域广告切片（灰产广告通常来自独立CDN，域名与正片不同）
   function filterAdsFromM3U8(m3u8Content: string): string {
     if (!m3u8Content) return '';
 
-    // 按行分割M3U8内容
     const lines = m3u8Content.split('\n');
-    const filteredLines = [];
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      // 只过滤#EXT-X-DISCONTINUITY标识
-      if (!line.includes('#EXT-X-DISCONTINUITY')) {
-        filteredLines.push(line);
+    // 第一遍：统计媒体切片域名，确定正片主域名（出现最多的）
+    const domainCount: Record<string, number> = {};
+    for (const line of lines) {
+      const t = line.trim();
+      if (t === '' || t.startsWith('#')) continue;
+      if (/\.m3u8($|\?)/i.test(t)) continue; // 子清单链接不参与统计
+      try {
+        const h = new URL(t, window.location.href).host;
+        domainCount[h] = (domainCount[h] || 0) + 1;
+      } catch (e) {}
+    }
+    let mainDomain: string | null = null;
+    let maxCount = 0;
+    for (const [h, c] of Object.entries(domainCount)) {
+      if (c > maxCount) {
+        maxCount = c;
+        mainDomain = h;
       }
+    }
+
+    // 第二遍：过滤异域广告切片（连同其 #EXTINF 行）
+    const filteredLines: string[] = [];
+    for (const line of lines) {
+      const t = line.trim();
+      if (t !== '' && !t.startsWith('#')) {
+        let isAd = false;
+        try {
+          if (mainDomain && new URL(t, window.location.href).host !== mainDomain) {
+            isAd = true;
+          }
+        } catch (e) {}
+        if (isAd) {
+          // 删除该切片及其前面的 #EXTINF 行
+          while (filteredLines.length > 0) {
+            const last = filteredLines[filteredLines.length - 1];
+            if (last.trim().startsWith('#EXTINF') || last.trim() === '') {
+              filteredLines.pop();
+            } else {
+              break;
+            }
+          }
+          continue;
+        }
+      }
+      filteredLines.push(line);
     }
 
     return filteredLines.join('\n');
